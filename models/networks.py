@@ -29,6 +29,9 @@ def get_norm_layer(norm_type='instance'):
         raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
     return norm_layer
 
+"""
+    This apparently selects a generator to use.
+"""
 def define_G(input_nc, output_nc, prev_output_nc, ngf, which_model_netG, n_downsampling, norm, scale, gpu_ids=[], opt=[]):
     netG = None    
     norm_layer = get_norm_layer(norm_type=norm)
@@ -114,6 +117,10 @@ class BaseNetwork(nn.Module):
         output = self.grid_sample(image, final_grid)
         return output
 
+"""
+    This class is a generator for the largest-size image, and concatenates in the course of forwardprop the outputs
+    from smaller-scale networks.
+"""
 class CompositeGenerator(BaseNetwork):
     def __init__(self, opt, input_nc, output_nc, prev_output_nc, ngf, n_downsampling, n_blocks, use_fg_model=False, no_flow=False,
                 norm_layer=nn.BatchNorm2d, padding_type='reflect'):
@@ -126,6 +133,17 @@ class CompositeGenerator(BaseNetwork):
         activation = nn.ReLU(True)
         
         if use_fg_model:
+            """
+
+                This is the hallucination network.
+
+                input -> pad -> conv2d (7x7) -> bnorm -> act -> [conv2d (3x3) -> bnorm -> act] * n_downsampling  # indv_down
+                
+                -> [resnet] * n_blocks (hyperparam) # indv_res
+
+                -> [convT2d (3x3) -> bnorm -> act] * n_downsmapling # indv_up
+
+            """
             ### individial image generation
             ngf_indv = ngf // 2 if n_downsampling > 2 else ngf
             indv_nc = input_nc
@@ -146,7 +164,8 @@ class CompositeGenerator(BaseNetwork):
                 mult = 2**(n_downsampling - i)            
                 indv_up += [nn.ConvTranspose2d(ngf_indv*mult, ngf_indv*mult//2, kernel_size=3, stride=2, padding=1, output_padding=1),
                             norm_layer(ngf_indv*mult//2), activation]                                
-            indv_final = [nn.ReflectionPad2d(3), nn.Conv2d(ngf_indv, output_nc, kernel_size=7, padding=0), nn.Tanh()]        
+
+            indv_final = [nn.ReflectionPad2d(3), nn.Conv2d(ngf_indv, output_nc, kernel_size=7, padding=0), nn.Tanh()] # THIS IS THE ARCHITECTURE FOR GENERATING H        
 
         ### flow and image generation
         ### downsample        
@@ -182,8 +201,8 @@ class CompositeGenerator(BaseNetwork):
             model_final_flow = [nn.ReflectionPad2d(3), nn.Conv2d(ngf, 2, kernel_size=7, padding=0)]                
             model_final_w = [nn.ReflectionPad2d(3), nn.Conv2d(ngf, 1, kernel_size=7, padding=0), nn.Sigmoid()] 
 
-        if use_fg_model:
-            self.indv_down = nn.Sequential(*indv_down)
+        if use_fg_model: # THIS IS THE MODEL THAT GENERATES H!
+            self.indv_down = nn.Sequential(*indv_down) # padding -> [conv2D -> norm -> activation] * n_downsampling
             self.indv_res = nn.Sequential(*indv_res)
             self.indv_up = nn.Sequential(*indv_up)
             self.indv_final = nn.Sequential(*indv_final)
@@ -200,6 +219,16 @@ class CompositeGenerator(BaseNetwork):
             self.model_final_flow = nn.Sequential(*model_final_flow)                       
             self.model_final_w = nn.Sequential(*model_final_w)
 
+    """
+        Forward pass for vid2vid; largest scale.
+
+        Parameters:
+        @param input: the input segmentation mask???
+        @param img_prev: the previous hallucinated image
+        @param mask: who knows
+        
+
+    """
     def forward(self, input, img_prev, mask, img_feat_coarse, flow_feat_coarse, img_fg_feat_coarse, use_raw_only):
         downsample = self.model_down_seg(input) + self.model_down_img(img_prev)
         img_feat = self.model_up_img(self.model_res_img(downsample))
@@ -222,13 +251,26 @@ class CompositeGenerator(BaseNetwork):
         
         img_fg_feat = None
         if self.use_fg_model:
+            """
+                This is the matting equation reflected in Wang et. al.
+
+                h = (1-m) * w(e) + m * h
+                
+                Their few shot architecture modifies the generation of h, replacing x with an example e. 
+                
+                h is defined as H(x, s), where x is the input images; s is the semantic segmentation maps.
+                Few shot vid2vid based on the paper dynamically determines weights for network H at test time, so we look
+                for the network that generates H.
+            """
             img_fg_feat = self.indv_up(self.indv_res(self.indv_down(input)))
-            img_fg = self.indv_final(img_fg_feat)
+            img_fg = self.indv_final(img_fg_feat) # WHERE IS THIS DEFINED? THIS IS THE H NETWORK 
 
-            mask = mask.cuda(gpu_id).expand_as(img_raw)            
-            img_final = img_fg * mask + img_final * (1-mask) 
-            img_raw = img_fg * mask + img_raw * (1-mask)                 
+            mask = mask.cuda(gpu_id).expand_as(img_raw) # expand mask to the same size as img_raw on GPU         
+            # IMG_FG == "H"
+            img_final = img_fg * mask + img_final * (1-mask) # yes warping 
+            img_raw = img_fg * mask + img_raw * (1-mask) # no warping                
 
+        # WARPING, FLOW, WEIGHTS, NO-WARPING, UPSAMPLED IMG, flow-related, intermediate var for backprop cache?
         return img_final, flow, weight, img_raw, img_feat, flow_feat, img_fg_feat
 
 class CompositeLocalGenerator(BaseNetwork):
@@ -293,6 +335,14 @@ class CompositeLocalGenerator(BaseNetwork):
             self.model_final_flow = nn.Sequential(*model_final_flow)                     
             self.model_final_w = nn.Sequential(*model_final_w)        
 
+    """
+
+        Parameters:
+        @param input is a real image. 
+        @param img_prev is a fake, generated image.
+        @params mask, img_feat
+
+    """
     def forward(self, input, img_prev, mask, img_feat_coarse, flow_feat_coarse, img_fg_feat_coarse, use_raw_only):
         flow_multiplier = 20 * (2 ** self.scale)        
         down_img = self.model_down_seg(input) + self.model_down_img(img_prev)
@@ -556,6 +606,14 @@ class ResnetBlock(nn.Module):
         super(ResnetBlock, self).__init__()
         self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, activation, use_dropout)
 
+    """
+        ResNet block.
+
+        
+        input --> padding -> conv2d (3x3) -> bnorm -> act (-> dropout) -> padding -> conv2d (3x3) -> bnorm -> out
+              |                                                                                            |
+              ----------------------------------------------------------------------------------------------
+    """
     def build_conv_block(self, dim, padding_type, norm_layer, activation, use_dropout):
         conv_block = []
         p = 0

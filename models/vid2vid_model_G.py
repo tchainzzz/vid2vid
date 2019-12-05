@@ -54,7 +54,7 @@ class Vid2VidModelG(BaseModel):
         
         # define training variables
         if self.isTrain:            
-            self.n_gpus = self.opt.n_gpus_gen if self.opt.batchSize == 1 else 1    # number of gpus for running generator            
+            self.n_gpus = 1 #self.opt.n_gpus_gen if self.opt.batchSize == 1 else 1    # number of gpus for running generator            
             self.n_frames_bp = 1                                                   # number of frames to backpropagate the loss            
             self.n_frames_per_gpu = min(self.opt.max_frames_per_gpu, self.opt.n_frames_total // self.n_gpus) # number of frames in each GPU
             self.n_frames_load = self.n_gpus * self.n_frames_per_gpu   # number of frames in all GPUs            
@@ -83,6 +83,11 @@ class Vid2VidModelG(BaseModel):
                 lr = opt.lr            
             self.optimizer_G = torch.optim.Adam(params, lr=lr, betas=(beta1, beta2))
 
+    """
+        @param input_map: segmentation map
+        @param real_image: real image
+        @param inst_map: instance segmentation map
+    """
     def encode_input(self, input_map, real_image, inst_map=None):        
         size = input_map.size()
         self.bs, tG, self.height, self.width = size[0], size[1], size[3], size[4]
@@ -111,12 +116,19 @@ class Vid2VidModelG(BaseModel):
 
         return input_map, real_image, pool_map
 
+    """
+        @param input_A: seg. map
+        @param input_B: real image
+        @param inst_A: instance map
+        @param fake_B_prev: previous images
+    """
     def forward(self, input_A, input_B, inst_A, fake_B_prev, dummy_bs=0):
         tG = self.opt.n_frames_G           
         gpu_split_id = self.opt.n_gpus_gen + 1        
         if input_A.get_device() == self.gpu_ids[0]:
             input_A, input_B, inst_A, fake_B_prev = util.remove_dummy_from_tensor([input_A, input_B, inst_A, fake_B_prev], dummy_bs)
             if input_A.size(0) == 0: return self.return_dummy(input_A)
+        # encoded seg. map, encoded real images, {encoded instance map}
         real_A_all, real_B_all, _ = self.encode_input(input_A, input_B, inst_A)        
 
         is_first_frame = fake_B_prev is None
@@ -131,13 +143,23 @@ class Vid2VidModelG(BaseModel):
 
         start_gpu = self.gpu_ids[1] if self.split_gpus else real_A_all.get_device()  
 
-        # THIS IS WHERE ACTUAL FORWARD PROP HAPPENS 
+        # THIS IS WHERE ACTUAL FORWARD PROP HAPPENS
         fake_B, fake_B_raw, flow, weight = self.generate_frame_train(netG, real_A_all, fake_B_prev, start_gpu, is_first_frame)        
         fake_B_prev = [B[:, -tG+1:].detach() for B in fake_B]
         fake_B = [B[:, tG-1:] for B in fake_B]
 
         return fake_B[0], fake_B_raw, flow, weight, real_A_all[:,tG-1:], real_B_all[:,tG-2:], fake_B_prev
 
+
+    """
+            netG is the size of generator we're using, so this generates a frame on netG with the follow parameters:
+
+            @param netG: generators
+            @param real_A_all: modded real image data
+            @param fake_B_prev: fake image pyramid to be conditioned on
+            @param start_gpu: self-explanatory
+            @param is_first_frame: bool for special case of first frame generation
+    """
     def generate_frame_train(self, netG, real_A_all, fake_B_pyr, start_gpu, is_first_frame):        
         tG = self.opt.n_frames_G        
         n_frames_load = self.n_frames_load
@@ -146,7 +168,8 @@ class Vid2VidModelG(BaseModel):
         dest_id = self.gpu_ids[0] if self.split_gpus else start_gpu        
 
         ### generate inputs   
-        real_A_pyr = self.build_pyr(real_A_all)        
+        # real_A_pyr is a list of tensors representing the image at various scales
+        real_A_pyr = self.build_pyr(real_A_all)         
         fake_Bs_raw, flows, weights = None, None, None            
         
         ### sequentially generate each frame
@@ -159,22 +182,41 @@ class Vid2VidModelG(BaseModel):
             for s in range(n_scales):
                 si = n_scales-1-s
                 ### prepare inputs                
-                # 1. input labels
-                real_As = real_A_pyr[si]
-                _, _, _, h, w = real_As.size()                  
-                real_As_reshaped = real_As[:, t:t+tG,...].view(self.bs, -1, h, w).cuda(gpu_id)              
+                # 1. input labels - segmentation masks?
+                real_As = real_A_pyr[si] # Load image at scale n_scales - 1 - s
+                _, _, _, h, w = real_As.size()                 
 
-                # 2. previous fake_Bs                
-                fake_B_prevs = fake_B_pyr[si][:, t:t+tG-1,...].cuda(gpu_id)
+                # real_As := 5D tensor of (batchSize, # of frames, # of channels, height, width), so this is just getting a time-slice of the frames
+                real_As_reshaped = real_As[:, t:t+tG,...].view(self.bs, -1, h, w).cuda(gpu_id) # flatten channels @ #frames into a single dimension              
+
+                # 2. previous fake_Bs (generated images)               
+                fake_B_prevs = fake_B_pyr[si][:, t:t+tG-1,...].cuda(gpu_id) # condition on fake_B at scale si for frames t to t+tG-1 to predict frame t+tG
                 if (t % self.n_frames_bp) == 0:
                     fake_B_prevs = fake_B_prevs.detach()
-                fake_B_prevs_reshaped = fake_B_prevs.view(self.bs, -1, h, w)
+                fake_B_prevs_reshaped = fake_B_prevs.view(self.bs, -1, h, w) # same flattening op as above
                 
                 # 3. mask for foreground and whether to use warped previous image
-                mask_F = self.compute_mask(real_As, t+tG-1) if self.opt.fg else None
-                use_raw_only = self.opt.no_first_img and is_first_frame 
+                mask_F = self.compute_mask(real_As, t+tG-1) if self.opt.fg else None # just occlusion
+                use_raw_only = self.opt.no_first_img and is_first_frame # silly bool.  
 
-                ### network forward                                                
+                ### network forward                  
+                """
+                    This is defined in networks.py:
+                    def forward(self, input, img_prev, mask, img_feat_coarse, flow_feat_coarse, img_fg_feat_coarse, use_raw_only):
+
+                    so real_As is the input (semantic segmentation mask!)
+                    fake_B is img_prev
+                    mask_F is used for occlusion
+                    fake_B_feat, flow_feat, fake_B_fg_feat appear to be None
+                    the mask, features, flow, foreground are all separate
+
+
+                    returns:
+                        img_final, flow, weight, img_raw, img_feat, flow_feat, img_fg_feat
+                        we care about img_raw (fake_Bs_raw), the no-warping version
+                        AND about (fake_B_pyr), which is created by ADDING the generated fake_B at that scale 
+                """
+
                 fake_B, flow, weight, fake_B_raw, fake_B_feat, flow_feat, fake_B_fg_feat \
                     = netG[s][net_id].forward(real_As_reshaped, fake_B_prevs_reshaped, mask_F, 
                                               fake_B_feat, flow_feat, fake_B_fg_feat, use_raw_only)
@@ -189,12 +231,13 @@ class Vid2VidModelG(BaseModel):
                 
                 # collect results into a sequence
                 fake_B_pyr[si] = self.concat([fake_B_pyr[si], fake_B.unsqueeze(1).cuda(dest_id)], dim=1)                                
-                if s == n_scales-1:                    
+                if s == n_scales-1:  # not training the smallest scale -- need to concat it into the bigger network          
                     fake_Bs_raw = self.concat([fake_Bs_raw, fake_B_raw.unsqueeze(1).cuda(dest_id)], dim=1)
                     if flow is not None:
                         flows = self.concat([flows, flow.unsqueeze(1).cuda(dest_id)], dim=1)
                         weights = self.concat([weights, weight.unsqueeze(1).cuda(dest_id)], dim=1)                        
-        
+       
+        # new sequence with gen. frame added on, no-warp version of the same, flow parameters, weight parameters
         return fake_B_pyr, fake_Bs_raw, flows, weights
 
     def inference(self, input_A, input_B, inst_A):
@@ -263,7 +306,7 @@ class Vid2VidModelG(BaseModel):
     def load_single_G(self): # load the model that generates the first frame
         opt = self.opt     
         s = self.n_scales
-        if 'City' in self.opt.dataroot:
+        if 'City' in self.opt.dataroot: # may have to custom-load stuff from here
             single_path = 'checkpoints/label2city_single/'
             if opt.loadSize == 512:
                 load_path = single_path + 'latest_net_G_512.pth'            

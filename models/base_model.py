@@ -119,6 +119,9 @@ class BaseModel(torch.nn.Module):
         else:
             return tensors[1]
 
+    """
+        Builds a "image pyramid" from an image tensor. This is a pyramid of downsampled image tensors, downsampled using AvgPool2d
+    """
     def build_pyr(self, tensor, nearest=False): # build image pyramid from a single image
         if tensor is None:
             return [None] * self.n_scales
