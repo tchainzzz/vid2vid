@@ -20,3 +20,6 @@ build/
 */**/*.dylib*
 *.DS_Store
 *~
+checkpoints/*
+datasets/*
+results/*

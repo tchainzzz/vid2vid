@@ -100,20 +100,25 @@ class BaseOptions():
         self.opt.isTrain = self.isTrain   # train or test
         
         self.opt.fg_labels = self.parse_str(self.opt.fg_labels)
-        self.opt.gpu_ids = self.parse_str(self.opt.gpu_ids)
-        if self.opt.n_gpus_gen == -1:
-            self.opt.n_gpus_gen = len(self.opt.gpu_ids)
-        
-        # set gpu ids
-        if len(self.opt.gpu_ids) > 0:
-            torch.cuda.set_device(self.opt.gpu_ids[0])
+        if torch.cuda.device_count() == 0:
+            self.opt.gpu_ids = "-1"
+        else:
+            self.opt.gpu_ids = self.parse_str(self.opt.gpu_ids)
+            if self.opt.n_gpus_gen == -1:
+                self.opt.n_gpus_gen = len(self.opt.gpu_ids)
+            
+            # set gpu ids
+            if len(self.opt.gpu_ids) > 0:
+                torch.cuda.set_device(self.opt.gpu_ids[0])
 
         args = vars(self.opt)
-
+        
+        """
         print('------------ Options -------------')
         for k, v in sorted(args.items()):
             print('%s: %s' % (str(k), str(v)))
         print('-------------- End ----------------')
+        """
 
         # save to the disk        
         expr_dir = os.path.join(self.opt.checkpoints_dir, self.opt.name)
