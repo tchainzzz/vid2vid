@@ -22,3 +22,5 @@ build/
 *~
 models/flownet2*
 .jpg
+few_shot/train*/
+few_shot/test*/
