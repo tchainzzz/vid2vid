@@ -36,11 +36,11 @@ class Vid2VidModelG(BaseModel):
             opt.no_flow = True     
 
         self.netG0 = networks.define_G(netG_input_nc, opt.output_nc, prev_output_nc, opt.ngf, opt.netG, 
-                                       opt.n_downsample_G, opt.norm, 0, self.gpu_ids, opt)
+                                       opt.n_downsample_G, opt.norm, 0, self.gpu_ids, opt).cuda()
         for s in range(1, self.n_scales):            
             ngf = opt.ngf // (2**s)
             setattr(self, 'netG'+str(s), networks.define_G(netG_input_nc, opt.output_nc, prev_output_nc, ngf, opt.netG+'Local', 
-                                                           opt.n_downsample_G, opt.norm, s, self.gpu_ids, opt))
+                                                           opt.n_downsample_G, opt.norm, s, self.gpu_ids, opt).cuda())
 
         print('---------- Networks initialized -------------') 
         print('-----------------------------------------------')
@@ -50,7 +50,7 @@ class Vid2VidModelG(BaseModel):
             for s in range(self.n_scales):
                 self.load_network(getattr(self, 'netG'+str(s)), 'G'+str(s), opt.which_epoch, opt.load_pretrain)
                 
-        self.netG_i = self.load_single_G() if self.use_single_G else None
+        self.netG_i = self.load_single_G().cuda() if self.use_single_G else None
         
         # define training variables
         if self.isTrain:            
@@ -257,8 +257,9 @@ class Vid2VidModelG(BaseModel):
         tG = self.opt.n_frames_G
         _, _, _, h, w = real_A.size()
         si = self.n_scales-1-s
+ 
         netG_s = getattr(self, 'netG'+str(s))
-        
+ 
         ### prepare inputs
         real_As_reshaped = real_A[0,:tG].view(1, -1, h, w)
         fake_B_prevs_reshaped = self.fake_B_prev[si].view(1, -1, h, w)               
