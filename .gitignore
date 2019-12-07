@@ -20,7 +20,8 @@ build/
 */**/*.dylib*
 *.DS_Store
 *~
-models/flownet2*
+.pth
+.tar
 .jpg
 few_shot/train*/
 few_shot/test*/

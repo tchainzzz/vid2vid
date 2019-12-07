@@ -9,6 +9,7 @@ from data.data_loader import CreateDataLoader
 from models.models import create_model
 import util.util as util
 import time
+from util.graph_viz import make_dot
 
 """
     This method loads a pretrained model, using a similar command-line args scheme as test.py.
@@ -31,7 +32,7 @@ def initialize(opt):
     opt.serial_batches = True  # no shuffle
     opt.no_flip = True  # no flip
     opt.dataset_mode = 'temporal'
-    opt.isTrain = False
+    opt.isTrain = True 
     opt.continue_train = True 
 
     print('------------ Options -------------')
@@ -44,6 +45,7 @@ def initialize(opt):
     Using pytorch's loss function API, this calculates some loss metric.
 """
 def CustomLoss(output, target):
+    target = target.detach()
     return torch.norm(output - target)
 
 
@@ -72,40 +74,39 @@ def main():
     data_loader = CreateDataLoader(opt)
     dataset = data_loader.load_data() # pass into dataroot loc. of our new segmentation maps
 
-    model = create_model(opt)
+    model,_, _ = create_model(opt)
+    print("---------Layers----------")
+    for name, child  in model.named_children():
+        print(name)
 
     optimizer = optim.Adam(model.parameters(), lr=opt.lr)
-    model = model.to(torch.device("cuda"))
 
+    loss = torch.nn.MSELoss() 
+    model = model.to(torch.device("cuda"))
+    model.fake_B_prev = None
     for param in model.parameters():
         param.requires_grad = True
 
     for epoch in range(opt.niter):
-        assert next(model.parameters()).is_cuda
         total_loss = 0
         start = time.time()
-        optimizer.zero_grad()
-        loss = 0
         for i, data in enumerate(dataset):
             _, _, height, width = data['A'].size()
             A = Variable(data['A']).view(1, -1, 1, height, width) # folder A has the segmentation maps
-            B = Variable(data['B']).view(1, -1, opt.output_nc, height, width) # folder B has the real images
+            B = Variable(data['B']).view(1, -1, opt.output_nc, height, width).requires_grad_(requires_grad=False) # folder B has the real images
    
             # FORWARD PASS: GENERATE IMAGE
-            torch.cuda.empty_cache()
+            optimizer.zero_grad()
 
-            fake, real = gen_image(model, A, B)
+            outputs = model(A, B, None, model.fake_B_prev)
+            fake = outputs[0]
             B = B.detach()
-            real = real.detach()
-            torch.cuda.empty_cache()
 
-            special_name = data['A_path'][0].split("/")[-1].split("_")[0]            
-            util.save_image(util.tensor2im(fake.data[0]), "few_shot/results/fake_B_{}_epoch{}.{}".format(special_name, i, 'jpg'))
-
-            loss += CustomLoss(fake, data['B'][:,-1,...].cuda().detach())
-        loss.backward(retain_graph=False)
-        optimizer.step()
-        total_loss += loss.item()
+            util.save_image(util.tensor2im(fake.data[0]), "few_shot/results/fake_B_img{:04d}_epoch_{:04d}.{}".format(i, epoch, 'jpg'))
+            output = loss(fake, data['B'][:,-3:,...].cuda())
+            output.backward(retain_graph=False)
+            optimizer.step()
+            total_loss += output.item()
         print("loss, epoch {}/{}: {} - took {:.4f}s".format(epoch + 1, opt.niter, total_loss, time.time() - start))
 
         # Save model
