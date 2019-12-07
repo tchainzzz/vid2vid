@@ -9,7 +9,7 @@ from data.data_loader import CreateDataLoader
 from models.models import create_model
 import util.util as util
 import time
-from util.graph_viz import make_dot
+import ssim as pytorch_ssim
 
 """
     This method loads a pretrained model, using a similar command-line args scheme as test.py.
@@ -78,7 +78,7 @@ def main():
         print(name)
     optimizer = optim.Adam(model.parameters(), lr=opt.lr)
 
-    loss = torch.nn.SmoothL1Loss() 
+    loss = pytorch_ssim.SSIM(window_size=11)
     model = model.to(torch.device("cuda"))
     model.fake_B_prev = None
     for param in model.parameters():
@@ -105,7 +105,7 @@ def main():
                 B_curr = B_curr.detach()
 	
                 if j == 0 or epoch==opt.niter-1: util.save_image(util.tensor2im(fake.data[0]), "few_shot/results/fake_B_img{:04d}_epoch_{:04d}.{}".format(j, epoch, 'jpg'))
-                output = loss(fake, B_curr[:, -1, ...].view(1, -1, opt.output_nc, height, width).cuda())
+                output = -loss(fake, B_curr[:, -1, ...].view(1, -1, opt.output_nc, height, width).cuda())
                 output.backward(retain_graph=False)
                 optimizer.step()
                 total_loss += output.item()
