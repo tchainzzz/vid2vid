@@ -307,7 +307,7 @@ class Vid2VidModelG(BaseModel):
     def load_single_G(self): # load the model that generates the first frame
         opt = self.opt     
         s = self.n_scales
-        if 'City' in self.opt.dataroot: # may have to custom-load stuff from here
+        if 'City' in self.opt.dataroot or True: # may have to custom-load stuff from here
             single_path = 'checkpoints/label2city_single/'
             if opt.loadSize == 512:
                 load_path = single_path + 'latest_net_G_512.pth'            
