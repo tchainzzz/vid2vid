@@ -17,6 +17,9 @@ def create_window(window_size, channel):
 def _ssim(img1, img2, window, window_size, channel, size_average = True):
     if len(img1.size()) ==  5: img1 = img1[:,-1,...]
     if len(img2.size()) == 5: img2 = img2[:,-1,...]
+    if len(img1.size()) == 3: img1 = img1.unsqueeze(0)
+    img1 = img1.cuda()
+    img2 = img2.cuda()
     mu1 = F.conv2d(img1, window, padding = window_size//2, groups = channel)
     mu2 = F.conv2d(img2, window, padding = window_size//2, groups = channel)
 
@@ -47,8 +50,9 @@ class SSIM(torch.nn.Module):
         self.window = create_window(window_size, self.channel)
 
     def forward(self, img1, img2):
-        (_, _, channel, _, _) = img1.size()
-
+        if len(img1.size()) == 5: (_, _, channel, _, _) = img1.size()
+        if len(img1.size()) == 3: (channel, _, _) = img1.size()
+        if len(img1.size()) == 4: (_, channel, _, _) = img1.size()
         if channel == self.channel and self.window.data.type() == img1.data.type():
             window = self.window
         else:
@@ -65,7 +69,8 @@ class SSIM(torch.nn.Module):
         return _ssim(img1, img2, window, self.window_size, channel, self.size_average)
 
 def ssim(img1, img2, window_size = 11, size_average = True):
-    (_, _, channel, _, _) = img1.size()
+    if len(img1.size()) == 5: (_, _, channel, _, _) = img1.size()
+    if len(img1.size()) == 3: (channel, _, _) = img1.size()
     window = create_window(window_size, channel)
     
     if img1.is_cuda:

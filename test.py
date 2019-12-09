@@ -2,6 +2,7 @@
 ### Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 import time
 import os
+import torch.nn as nn
 import numpy as np
 from collections import OrderedDict
 from torch.autograd import Variable
@@ -11,6 +12,8 @@ from models.models import create_model
 import util.util as util
 from util.visualizer import Visualizer
 from util import html
+from pytorch_msssim import ms_ssim, MS_SSIM
+import ssim as pytorch_ssim
 
 opt = TestOptions().parse(save=False)
 opt.nThreads = 1   # test code only supports nThreads = 1
@@ -28,6 +31,9 @@ input_nc = 1 if opt.label_nc != 0 else opt.input_nc
 
 save_dir = os.path.join(opt.results_dir, opt.name, '%s_%s' % (opt.phase, opt.which_epoch))
 print('Doing %d frames' % len(dataset))
+# loss = nn.MSELoss()
+loss = pytorch_ssim.SSIM(window_size=11) 
+total_loss = 0
 for i, data in enumerate(dataset):
     if i >= opt.how_many:
         break    
@@ -39,16 +45,19 @@ for i, data in enumerate(dataset):
     B = Variable(data['B']).view(1, -1, opt.output_nc, height, width) if len(data['B'].size()) > 2 else None
     inst = Variable(data['inst']).view(1, -1, 1, height, width) if len(data['inst'].size()) > 2 else None
     generated = model.inference(A, B, inst)
-    
+    B = B.cuda() 
     if opt.label_nc != 0:
         real_A = util.tensor2label(generated[1], opt.label_nc)
     else:
         c = 3 if opt.input_nc == 3 else 1
         real_A = util.tensor2im(generated[1][:c], normalize=False)    
-        
+    
+    total_loss += loss(generated[0].data[0].unsqueeze(0), B[:, -1, ...]) # no negative sign when using MSELoss!
+ 
     visual_list = [('real_A', real_A), 
                    ('fake_B', util.tensor2im(generated[0].data[0]))]
     visuals = OrderedDict(visual_list) 
     img_path = data['A_path']
     print('process image... %s' % img_path)
     visualizer.save_images(save_dir, visuals, img_path)
+print("total loss: {}; loss per image: {}".format(total_loss, total_loss / len(dataset)))

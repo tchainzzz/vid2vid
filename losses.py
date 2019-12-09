@@ -99,6 +99,7 @@ def main():
     for epoch in range(opt.niter):
         total_loss = 0
         start = time.time()
+        n_seq = 0
         for i, data in enumerate(dataset):
             _, _, height, width = data['A'].size()
             A = data['A'].view(1, -1, 1, height, width) # folder A has the segmentation maps
@@ -106,6 +107,7 @@ def main():
             
             n_img = A.shape[1]
             save_seq = range(6) # save first 6 frames of each 
+            n_seq += n_img - tG
             for j in range(n_img - tG):
                 A_curr = A[:, j:j+tG, ...]
                 B_curr = B[:, j:j+tG,...]
@@ -119,12 +121,12 @@ def main():
                 real_B = real_B.detach()
 	
                 if j in save_seq or epoch==opt.niter-1: util.save_image(util.tensor2im(fake.data[0]), "few_shot/results/fake_B_img{:04d}_epoch_{:04d}.{}".format(j, epoch, 'jpg'))
-                output = - (loss(fake, real_B) + loss(fake_raw, real_B) * lambda_raw)
+                output = loss(fake, real_B) 
                 output.backward(retain_graph=False)
                 optimizer.step()
                 total_loss += output.item()
                 sys.stdout.write("\r[INFO] current loss on image subsequence {}/{}, epoch={}: {}".format(j+1, n_img - tG, epoch+1, output.item()))
-        print("\ntotal loss, epoch {}/{}: {} - took {:.4f}s".format(epoch + 1, opt.niter, total_loss, time.time() - start))
+        print("\ntotal loss, epoch {}/{}: {}, {} per iamge - took {:.4f}s".format(epoch + 1, opt.niter, total_loss, total_loss / (n_img - tG), time.time() - start))
 
         # Save model
         losses.append(total_loss)
